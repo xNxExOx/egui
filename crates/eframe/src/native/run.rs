@@ -8,6 +8,7 @@ use egui_winit::winit;
 use winit::event_loop::{
     ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget,
 };
+use winit::platform::windows::EventLoopBuilderExtWindows;
 
 use super::epi_integration::{self, EpiIntegration};
 use crate::epi;
@@ -58,6 +59,7 @@ fn create_event_loop_builder(
 /// multiple times. This is just a limitation of winit.
 fn with_event_loop(
     mut native_options: epi::NativeOptions,
+    any_thread: bool,
     f: impl FnOnce(&mut EventLoop<RequestRepaintEvent>, NativeOptions),
 ) {
     use std::cell::RefCell;
@@ -68,8 +70,15 @@ fn with_event_loop(
         // do that as part of the lazy thread local storage initialization and so we instead
         // create the event loop lazily here
         let mut event_loop = event_loop.borrow_mut();
-        let event_loop = event_loop
-            .get_or_insert_with(|| create_event_loop_builder(&mut native_options).build());
+        let event_loop =
+            if cfg!(windows) {
+                use winit::platform::windows::EventLoopBuilderExtWindows;
+                event_loop
+                    .get_or_insert_with(|| create_event_loop_builder(&mut native_options).with_any_thread(any_thread).build())
+            } else {
+                event_loop
+                    .get_or_insert_with(|| create_event_loop_builder(&mut native_options).build())
+            };
         f(event_loop, native_options);
     });
 }
@@ -579,7 +588,7 @@ mod glow_integration {
         app_creator: epi::AppCreator,
     ) {
         if native_options.run_and_return {
-            with_event_loop(native_options, |event_loop, native_options| {
+            with_event_loop(native_options, false, |event_loop, native_options| {
                 let glow_eframe =
                     GlowWinitApp::new(event_loop, app_name, native_options, app_creator);
                 run_and_return(event_loop, glow_eframe);
@@ -590,10 +599,32 @@ mod glow_integration {
             run_and_exit(event_loop, glow_eframe);
         }
     }
+    #[cfg(target_os = "windows")]
+    pub fn run_glow_any_thread(
+        app_name: &str,
+        mut native_options: epi::NativeOptions,
+        app_creator: epi::AppCreator,
+        any_thread: bool,
+    ) {
+        if native_options.run_and_return {
+            with_event_loop(native_options, any_thread, |event_loop, native_options| {
+                let glow_eframe =
+                    GlowWinitApp::new(event_loop, app_name, native_options, app_creator);
+                run_and_return(event_loop, glow_eframe);
+            });
+        } else {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            let event_loop = create_event_loop_builder(&mut native_options).with_any_thread(any_thread).build();
+            let glow_eframe = GlowWinitApp::new(&event_loop, app_name, native_options, app_creator);
+            run_and_exit(event_loop, glow_eframe);
+        }
+    }
 }
 
 #[cfg(feature = "glow")]
 pub use glow_integration::run_glow;
+#[cfg(all(feature = "glow", target_os = "windows"))]
+pub use glow_integration::run_glow_any_thread;
 // ----------------------------------------------------------------------------
 
 #[cfg(feature = "wgpu")]
@@ -941,7 +972,7 @@ mod wgpu_integration {
         app_creator: epi::AppCreator,
     ) {
         if native_options.run_and_return {
-            with_event_loop(native_options, |event_loop, native_options| {
+            with_event_loop(native_options, false, |event_loop, native_options| {
                 let wgpu_eframe =
                     WgpuWinitApp::new(event_loop, app_name, native_options, app_creator);
                 run_and_return(event_loop, wgpu_eframe);
